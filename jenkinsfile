@@ -20,9 +20,7 @@ pipeline {
                     aws s3 list
                     '''
                 }
-                sh '''
-                aws --version
-                '''
+               
             }
         }
 
