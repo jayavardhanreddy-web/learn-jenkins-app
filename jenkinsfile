@@ -1,0 +1,153 @@
+pipeline {
+    agent any
+    environment {
+        NETLIFY_SITE_ID = '7f9dc758-a649-4aa5-9910-21620314c4de'
+        NETLIFY_AUTH_TOKEN = credentials('netlify-dash-token')
+    }
+
+    stages {
+        stage('aws'){
+            agent{
+                docker{
+                    image 'amazon/aws-cli'
+                    args "--entrypoint=''"
+                }
+            }
+            steps{
+                withCredentials([usernamePassword(credentialsId: 'aws-token', passwordVariable: 'AWS_SECRET_ACCESS_KEY', usernameVariable: '')]) {
+                    sh '''
+                    aws --version
+                    aws s3 list
+                    '''
+                }
+                sh '''
+                aws --version
+                '''
+            }
+        }
+
+        stage('docker') {
+            steps {
+                sh 'docker buildx build -t my-playwright .'
+            }
+        }
+
+        stage('Build') {
+            agent {
+                docker {
+                    image 'node:latest'
+                    reuseNode true
+                }
+            }
+            steps {
+                echo 'Building the project...'
+                sh '''
+                    npm --version
+                    node --version
+                    npm ci
+                    npm run build
+                    ls -a
+                '''
+            }
+        }
+
+        stage('test') {
+            agent {
+                docker {
+                    image 'node:latest'
+                    reuseNode true
+                }
+            }
+            steps {
+                echo 'Running unit tests'
+                sh 'npm test'
+            }
+        }
+
+        stage('E2E') {
+            agent {
+                docker {
+                    image 'my-playwright'
+                    reuseNode true
+                }
+            }
+            steps {
+                echo 'We are on the E2E test stage'
+                sh '''
+                    serve -s build &
+                    sleep 10
+                    npx playwright test
+                '''
+            }
+        }
+
+        stage('deploy staging') {
+            agent {
+                docker {
+                    image 'my-playwright'
+                    reuseNode true
+                }
+            }
+            steps {
+                echo 'We are at deployment staging'
+                sh '''
+                    netlify --version
+                    echo "deployment production site id : $NETLIFY_SITE_ID"
+                    netlify status
+                    netlify deploy --dir=build --json > deploy-output.json
+                    node-jq '.deploy_url' deploy-output.json
+                '''
+            }
+        }
+
+        stage('Approval') {
+            steps {
+                timeout(time: 15, unit: 'MINUTES') {
+                    input message: 'Are you ready for deployment?', ok: 'Yes, I am sure!'
+                }
+            }
+        }
+
+        stage('deploy to production') {
+            agent {
+                docker {
+                    image 'my-playwright'
+                    reuseNode true
+                }
+            }
+            steps {
+                echo 'We are at deployment to production'
+                sh '''
+                    netlify --version
+                    echo "deployment production site id : $NETLIFY_SITE_ID"
+                    netlify status
+                    netlify deploy --dir=build --prod
+                '''
+            }
+        }
+
+        stage('prod e2e') {
+            agent {
+                docker {
+                    image 'my-playwright'
+                }
+            }
+            environment {
+                CI_ENVIRONMENT_URL = 'https://startling-unicorn-f2cbbb.netlify.app'
+            }
+            steps {
+                echo 'At production testing stage'
+                sh '''
+                    npm ci
+                    npx playwright test
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            junit 'jest-results/junit.xml'
+        }
+    }
+}
